@@ -13,7 +13,7 @@ set +x
 #   Error handling
 #   DONE - Volume detail, finish it.
 
-VERSION="0.9"
+VERSION="1.0"
 SUBJECT="REST_API_Pure_CLI"
 
 #_PURE_IP=""
@@ -44,20 +44,60 @@ USAGE="
     OPTIONS:
 
         -h      Help, obviously
+        
+        -l <snap_pg | vols | msg | info | maps | port>
+                Listing details of a spacific part of configuration or hardware
+                <snap_pg> 
+                    * list snapshots of protection groups, not listing the 
+                      volume snapshots
+                <vols>
+                    * list of volumes created on the system (same as -D)
+                    -f <regexp>
+                        * optional filter on the results
+                <msg>
+                    * messages, a.k.a. alerts and info
+                <info>
+                    * additional information on the storage array (same as -I)
+                <maps>
+                    *  show host list. When used together with -f it displays 
+                       details as well
+                    -f <regexp>
+                        * optional filter on the results - this has to be used 
+                          to see the actual mapping
+                        * to display all mapping for all hosts, use -f '.'
+                <port>
+                    * list of frontend ports
+                    
+               
 
         -P      Port information
-
-        -D      Disk / volume information
-            -f <regexp>      
-                Filtering option (REGEXP). Used in conjunction with -D
 
         -I      Basic array info, including pool occupancy
 
         -m      Messages, logging and auditing
 
-        -H      Host listing
-            -d  <regexp>    
-                Detailed listing for (a) specific host(s)
+        -S <protection_group>      
+                Create a snapshot from a protection group
+                <protection_group> 
+                
+            -s <suffix>
+                The snapshot suffix of the protection group snapshot
+                Cannot be just numbers, needs to be chars, at least start with 
+                a character. This has to be used in conjunction with -S
+        
+        -C <pg_name>      
+                Clone snapshots
+                    
+                -n <new_cloned_volumes_prefix_name> 
+                    used in conjunction with -C, specifies the 
+                
+        -r <pg snapshot name>
+                Restores a given snapshot to source volumes. e.g. if the PG
+                snapshot is EDWP12SITE1.FRANZ, it was created from the 
+                protection group EDWP12SITE1, containing snapshots of the 
+                devices (EDWP12SITE1.FRANZ.EDWP12_SITE1_0000, 
+                EDWP12SITE1.FRANZ.EDWP12_SITE1_0001, ...)
+                
 
 
     ERROR_CODES:
@@ -66,6 +106,16 @@ USAGE="
 
     EXAMPLES:
         $0 -i 4.2.2.3 -u xyz -t 967adc3d-29ee-1228-6158-7e3ca33fb198 -DF '^ *ora'
+        
+        Create a new snapshot:
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal -S EDWP06SITE2 -s 'snapp'
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal -l snap_pg
+        
+        Clone a snapshot set (the whole protection group):
+        <-C argument>.<EDWP06_SITE2_xxxx> -------------->
+            <-n argument>_xxxx where xxxx is the seq number read from source
+                                  and appended to the new name
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal -C EDWP06SITE2.snapp -n EDWP12_SITE1
 "
 
 _ERROR_BOX="
@@ -80,16 +130,27 @@ _DIVIDER="----------------------------------------------------------------------
 # Functions
 #-------------------------------------------------------------------------------
 ########################### GENERIC ############################################
-function wget_get(){
+function wget_get () {
     wget --no-check-certificate -qO- \
     "https://$_PURE_IP/api/1.8/$1" \
     --header "Content-Type: application/json" \
     --load-cookies auth.txt
 }
 
+function wget_post () {
+    _PURE_POST_REQUEST=$1
+    _PURE_POST_DATA=$2
+    wget --no-check-certificate -qO- \
+    "https://$_PURE_IP/api/1.8/$_PURE_POST_REQUEST" \
+    --header "Content-Type: application/json" \
+    --post-data='{'$_PURE_POST_DATA'}' \
+    --load-cookies auth.txt
+}
+
+
 # As authentification uses cookies to store sessions in order to call commands,
 # cookies must be written to disk to ./auth.txt
-function auth(){
+function auth () {
    wget --no-check-certificate -qO- \
     https://$_PURE_IP/api/1.8/auth/session \
     --header "Content-Type: application/json" \
@@ -97,12 +158,12 @@ function auth(){
     --save-cookies auth.txt
 }
 
-function cleanup(){
+function cleanup () {
     echo "Cleanup"
 }
 
 ################################# SPECIFIC #####################################
-function json_cleanup(){
+function json_cleanup () {
     _CLEAN_RESULT=`echo $1 | sed 's/\},/\n\n/g' | sed 's/,/\n/g' | \
                    tr -d '\[\]\{\}\" '`
 }
@@ -113,13 +174,13 @@ function json_cleanup_oneline(){
 }
 
 # Candidate for renaming, replacing the above function
-function json_cleanup_oneline_wwn(){
+function json_cleanup_oneline_wwn () {
     sed 's/\("[A-F0-9]\{16\}"\),/\1;/g' | \
     sed 's/\},/\n\n/g' | tr -d '\[\]\{\}\" ' | grep -v '^$'
 }
 
 # ---------------------------- VOLUMES -----------------------------------------
-function awk_port_header(){
+function awk_port_header () {
     echo "" | awk -F\, '{printf("%8s | %26s | %6s | %7s \n",
                                 "name",
                                 "wwn", 
@@ -128,7 +189,7 @@ function awk_port_header(){
                         }'
 }
 
-function awk_port_formatter(){
+function awk_port_formatter () {
     awk -F\, '{failover=gensub(/[a-z]*:/, "", 1, $2);
                wwn=tolower(gensub(/[a-z]*:/, "", 1, $3));
                portal=gensub(/[a-z]*:/, "", 1, $4);
@@ -142,7 +203,7 @@ function awk_port_formatter(){
 }
 
 # ---------------------------- VOLUMES -----------------------------------------
-function awk_volume_header(){
+function awk_volume_header () {
     echo "" | awk -F\, '{printf("%25s | %26s | %8s | %22s | %s \n",
                                 "name",
                                 "serial", 
@@ -152,7 +213,7 @@ function awk_volume_header(){
                         }'
 }
 
-function awk_volume_formatter(){
+function awk_volume_formatter () {
     awk -F\, '{source=gensub(/[a-z]*:/, "", 1, $1);
                serial=tolower(gensub(/[a-z]*:/, "", 1, $2));
                t_stamp=gensub(/[a-z]*:/, "", 1, $3);
@@ -168,7 +229,7 @@ function awk_volume_formatter(){
 }
 
 #------------------------------- HOSTS -----------------------------------------
-function awk_host_header(){
+function awk_host_header () {
     echo "" | awk -F\, '{printf("%68s | %15s | %s \n",
                                 "wwn",
                                 "name", 
@@ -176,7 +237,7 @@ function awk_host_header(){
                         }'
 }
 
-function awk_host_formatter(){
+function awk_host_formatter () {
     awk -F\, '{wwn=tolower(gensub(/[a-z]*:/, "", 1, $1));
                name=gensub(/[a-z]*:/, "", 1, $2);
                h_group=gensub(/[a-z]*:/, "", 1, $3);
@@ -188,21 +249,62 @@ function awk_host_formatter(){
 }
 
 #------------------------------- HOST_MAPS / details ---------------------------
-function awk_host_map_header(){
+function awk_host_map_header () {
     echo "" | awk -F\, '{printf("%30s | %-4s \n",
                                 "vol",
                                 "lun")
                         }'
 }
 
-function awk_host_map_formatter(){
-    awk -F\, '{vol=tolower(gensub(/[a-z]*:/, "", 1, $1));
+function awk_host_map_formatter () {
+    awk -F\, '{vol=gensub(/[a-z]*:/, "", 1, $1);
                server=gensub(/[a-z]*:/, "", 1, $2);
                lun=gensub(/[a-z]*:/, "", 1, $3);
                h_group=gensub(/[a-z]*:/, "", 1, $4);
                printf("%30s | %-4s \n", 
                       vol,
                       lun)
+              }'
+}
+
+#------------------------------- HOST_MAPS / details ---------------------------
+awk_snap_pg_header () {
+    echo "" | awk -F\, '{printf("%20s | %-20s | %15s \n", 
+                                 "source",
+                                 "name",
+                                 "tstamp")
+                        }'
+}
+
+awk_snap_pg_formatter () {
+    awk -F\, '{source=gensub(/[a-z]*:/, "", 1, $1);
+               name=gensub(/[a-z]*:/, "", 1, $2);
+               tstamp=gensub(/[a-z]*:/, "", 1, $3);
+               printf("%20s | %-20s | %15s \n", 
+                      source,
+                      name,
+                      tstamp)
+              }'
+}
+#------------------------------- SNAPSHOT in PROTGROUP -------------------------
+awk_snap_formatter () {
+    awk -F\, '{source=gensub(/[a-z]*:/, "", 1, $1);
+               serial=gensub(/[a-z]*:/, "", 1, $2);
+               tstamp=gensub(/[a-z]*:/, "", 1, $3);
+               name=gensub(/[a-z]*:/, "", 1, $4);
+               size=gensub(/[a-z]*:/, "", 1, $5);
+               printf("%20s | %-35s | %20s | %35s | %15s \n", 
+                      source,
+                      serial,
+                      tstamp,
+                      name,
+                      size)
+              }'
+}
+
+awk_snap_extractor () {
+    awk -F\, '{name=gensub(/[a-z]*:/, "", 1, $4);
+               print name
               }'
 }
 
@@ -214,7 +316,7 @@ if [ $# = 0 ]; then
     exit 1;
 fi
 
-while getopts "hi:u:t:PDf:ImHd:" optname; do
+while getopts "hl:i:u:t:PDf:ImS:s:C:n:r:" optname; do
     case $optname in
         "h")
             echo "$USAGE"
@@ -222,6 +324,27 @@ while getopts "hi:u:t:PDf:ImHd:" optname; do
             ;;
         "i")
             _PURE_IP=$OPTARG
+            ;;
+        "l")
+            _LIST=1
+            _LIST_MODE=$OPTARG
+            case $OPTARG in 
+                "snap_pg")
+                    _LIST_SNAPSHOTS_PG=1
+                    ;;
+                "vols")
+                    _SHOW_VOLUMES=1
+                    ;;
+                "msg")
+                    _SHOW_MESSAGES=1
+                    ;;
+                "info")
+                    _SHOW_INFO=1
+                    ;;
+                "maps")
+                    _SHOW_MAPPING=1
+                    ;;
+            esac
             ;;
         "u")
             _PURE_USER=$OPTARG
@@ -237,19 +360,33 @@ while getopts "hi:u:t:PDf:ImHd:" optname; do
             ;;
         "f")
             _VOLUMES_FILTER=$OPTARG
+            _HOST_DETAILS=$OPTARG
             ;;            
         "I")
             _SHOW_INFO=1
             ;;
-        "H")
-            _SHOW_MAPPING=1
-            ;;
-        "d")
-            _HOST_DETAILS=$OPTARG
-            ;;
         "m")
             _SHOW_MESSAGES=1
             ;;
+        "S")
+            _CREATE_SNAP_PG=1
+            _SNAP_PG=$OPTARG
+            ;; 
+        "s")
+            _PG_SNAP_SUFFIX=$OPTARG
+            ;;   
+        "C")
+            _CLONE_SNAPS=1
+            _SNAP_PG=$OPTARG
+            ;; 
+           
+        "n")
+            _NEW_CLONE_PREFIX=$OPTARG
+            ;;
+        "r")
+            _SNAPSHOT_RESTORE=1
+            _SNAP_PG=$OPTARG
+            ;; 
         \?)
             echo "Invalid option: -$OPTARG" >&2
             #exit 1
@@ -359,4 +496,93 @@ if [ $_SHOW_MAPPING ]; then
     fi
 fi
 
-############################ NEXT section here #################################
+#############################  List snapshots  #################################
+if [ $_LIST_SNAPSHOTS_PG ]; then 
+    SNAPSHOTS_RAW=`wget_get 'pgroup?snap=true'`
+    awk_snap_pg_header
+    echo $_DIVIDER
+    _MACHINE_LIST=`echo "$SNAPSHOTS_RAW" | json_cleanup_oneline | grep -v '^$'`
+    echo "$_MACHINE_LIST" | awk_snap_pg_formatter
+fi
+
+#################### Create a snapshot of a Protection Group ###################
+
+if [ $_CREATE_SNAP_PG ]; then 
+    POST_REQUEST='"snap":true,"source":["'$_SNAP_PG'"],"suffix":"'$_PG_SNAP_SUFFIX'"'
+    echo $POST_REQUEST
+    POST_RAW=`wget_post 'pgroup' "$POST_REQUEST"`
+    echo $POST_RAW
+    
+fi
+############################ SNAPSHOTS section here ############################
+# Get a list of snapshots from the protection group
+if [ $_CLONE_SNAPS ]; then
+    SNAPSHOTS_RAW=`wget_get "volume?snap=true&pgrouplist=$_SNAP_PG"`
+    _MACHINE_LIST=`echo "$SNAPSHOTS_RAW" | json_cleanup_oneline | grep -v '^$'`
+    #echo "$_MACHINE_LIST" | awk_snap_formatter
+    SNAPSHOTS=`echo "$_MACHINE_LIST" | awk_snap_extractor `
+    for snapshot in $SNAPSHOTS; do
+        NEW_CLONE_SUFFIX=`echo $snapshot | awk -F\_ '{print $3}'`
+        NEW_CLONE="$_NEW_CLONE_PREFIX"_"$NEW_CLONE_SUFFIX"
+        POST_REQUEST='"source":"'$snapshot'","overwrite":"true"'
+        #echo "wget_post \"volume/$NEW_CLONE\" \"$POST_REQUEST\""
+        RESULT=`wget_post "volume/$NEW_CLONE" "$POST_REQUEST"`
+        echo $RESULT
+        sleep 1
+    done
+    #echo $SNAPSHOTS
+    POST_REQUEST=''
+    
+fi
+# Iterate through snapshots and copy them to new devices
+    
+    # purevol copy EDWP12SITE1.FRANZ.EDWP12_SITE1_0000 EDWP12_SITE1_0000 --overwrite
+    # purevol copy EDWP06SITE2.snap.EDWP06_SITE2_0001 EDWP12_SITE1_0001
+    # purevol copy EDWP06SITE2.snap.EDWP06_SITE2_0002 EDWP12_SITE1_0002
+    
+# Now let's get serious, script ahoy, overwrite:
+#    EDWP12_SITE1_0000 |   276ea9e0aa2646f700011392 |   2048 G |   2017-02-13T16:32:56Z | EDWP06_SITE2_0000
+#    Serial	 276EA9E0AA2646F700011392		
+#    Created 2017-02-13 17:32:56
+
+############################ SNAPSHOT restore only #############################
+# Get a list of snapshots from the protection group, then restore it to whatever
+# source volumes are defined here
+if [ $_SNAPSHOT_RESTORE ]; then
+    SNAPSHOTS_RAW=`wget_get "volume?snap=true&pgrouplist=$_SNAP_PG"`
+    _MACHINE_LIST=`echo "$SNAPSHOTS_RAW" | json_cleanup_oneline | grep -v '^$'`
+    #echo "$_MACHINE_LIST" | awk_snap_formatter
+    SNAPSHOTS=`echo "$_MACHINE_LIST" | awk_snap_extractor `
+    for snapshot in $SNAPSHOTS; do
+        NEW_CLONE_SUFFIX=`echo $snapshot | sed ''`
+        VOLUME_NAME=`echo $snapshot | sed 's/.*\.//g'`
+        #echo "$VOLUME_NAME"
+        NEW_CLONE="$VOLUME_NAME"
+        POST_REQUEST='"source":"'$snapshot'","overwrite":"true"'
+        #echo "wget_post \"volume/$NEW_CLONE\" \"$POST_REQUEST\""
+        COMMANDS="$COMMANDS
+        wget_post volume/$NEW_CLONE $POST_REQUEST"
+    done
+    echo "$COMMANDS" | sed 's/wget_post/Restore/g' | sed 's/\"//g' |\
+                       sed 's/,.*$//g' | sed 's/source:/ <<- From snapshot: /g'
+    echo "If the above lines seem accurate and represent what you intend to do,"
+    echo "please type in 'yes'"
+    read response
+    COMMANDS=`echo "$COMMANDS" | sed 's/\ /;/g'`
+    echo $_DIVIDER
+    echo "Frame response:"
+    if [ $response == 'yes' ]; then
+        for command in $COMMANDS; do
+            to_execute=`echo $command | sed 's/;/\ /g'`
+            echo $to_execute
+            RESULT=`$to_execute`
+            echo "$RESULT"
+            sleep 1
+        done
+    else
+        echo "Cancelling!"
+    fi
+    #echo $SNAPSHOTS
+    POST_REQUEST=''
+    
+fi
