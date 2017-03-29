@@ -130,11 +130,39 @@ _DIVIDER="----------------------------------------------------------------------
 # Functions
 #-------------------------------------------------------------------------------
 ########################### GENERIC ############################################
+# As authentification uses cookies to store sessions in order to call commands,
+# cookies must be written to disk to ./auth.txt
+function auth () {
+    # Need to store debug output to get the session cookie
+    _AUTH_RESULT=`wget --no-check-certificate -dO- \
+                       https://$_PURE_IP/api/1.8/auth/session \
+                       --post-data='{"api_token":"'$_PURE_TOKEN'"}' \
+                       --header="Content-Type: application/json" 2>&1`
+    _AUTH_ERROR=`echo "$_AUTH_RESULT" | grep '"msg":'`
+    _AUTH_USER=`echo "$_AUTH_RESULT" | grep '^{'`
+    _AUTH_COOKIE=`echo "$_AUTH_RESULT" | grep Set- |\
+                                         awk -F\; '{print $1}' |\
+                                         sed 's/Set-Cookie: //g'`
+}
+
+function deAuth () {
+    curl -k -X DELETE -b $_AUTH_COOKIE https://$_PURE_IP/api/1.8/auth/session
+}
+
+function generateToken () {
+    _TOKEN_RESULT=`wget --no-check-certificate -dO- \
+                        "https://$_PURE_IP/api/1.8/auth/apitoken" \
+                        --header "Content-Type: application/json" \
+                        --post-data='{"password": "'"$_PURE_PASS"'",
+                                      "username": "'"$_PURE_USER"'"}' 2>&1`
+    _TOKEN_ERROR=`echo "$_TOKEN_RESULT" | grep '"msg":'`
+}
+
 function wget_get () {
     wget --no-check-certificate -qO- \
     "https://$_PURE_IP/api/1.8/$1" \
     --header "Content-Type: application/json" \
-    --load-cookies auth.txt
+    --header "Cookie: $_AUTH_COOKIE"
 }
 
 function wget_post () {
@@ -144,22 +172,22 @@ function wget_post () {
     "https://$_PURE_IP/api/1.8/$_PURE_POST_REQUEST" \
     --header "Content-Type: application/json" \
     --post-data='{'$_PURE_POST_DATA'}' \
-    --load-cookies auth.txt
-}
-
-
-# As authentification uses cookies to store sessions in order to call commands,
-# cookies must be written to disk to ./auth.txt
-function auth () {
-   wget --no-check-certificate -qO- \
-    https://$_PURE_IP/api/1.8/auth/session \
-    --header "Content-Type: application/json" \
-    --post-data='{"api_token":"'$_PURE_TOKEN'"}' \
-    --save-cookies auth.txt
+    --header "Cookie: $_AUTH_COOKIE"
 }
 
 function cleanup () {
     echo "Cleanup"
+    if [ -e ./auth.txt ]; then 
+        echo "Removing auth cookie file..."
+        rm ./auth.txt
+        if [ $? == '0' ]; then
+            echo "Auth cookie file succesfully deleted"
+        else
+            echo "Error deleting auth cookie file"
+        fi
+    else
+        echo "Auth cookie not present, not removing"
+    fi
 }
 
 ################################# SPECIFIC #####################################
@@ -269,9 +297,9 @@ function awk_host_map_formatter () {
 
 #------------------------------- HOST_MAPS / details ---------------------------
 awk_snap_pg_header () {
-    echo "" | awk -F\, '{printf("%20s | %-20s | %15s \n", 
-                                 "source",
-                                 "name",
+    echo "" | awk -F\, '{printf("%20s | %-33s | %15s \n", 
+                                 "src_prot_group",
+                                 "snapshot_name",
                                  "tstamp")
                         }'
 }
@@ -280,7 +308,7 @@ awk_snap_pg_formatter () {
     awk -F\, '{source=gensub(/[a-z]*:/, "", 1, $1);
                name=gensub(/[a-z]*:/, "", 1, $2);
                tstamp=gensub(/[a-z]*:/, "", 1, $3);
-               printf("%20s | %-20s | %15s \n", 
+               printf("%20s | %-33s | %15s \n", 
                       source,
                       name,
                       tstamp)
@@ -402,16 +430,41 @@ echo $_DIVIDER
 ################################### AAA ########################################
 #-------------------------------------------------------------------------------
 # Establish session
-AUTH_RAW=`auth`
-AUTH_RESPONSE=$?
-if [ $AUTH_RESPONSE -ne '0' ]; then
+# Is sesstion via token, or user and password?
+if [ "x$_PURE_USER" != "x" ]; then
+    echo "Authenticating interactively, as $_PURE_USER"
+    echo "Pure Password:"
+    read -s _PURE_PASS
+    echo "Getting API token:"
+    generateToken
+    echo $_DIVIDER
+    if [ $? != '0' ]; then
+        echo "Error reaching Pure storage"
+        exit 2
+    else
+        if [ "x$_TOKEN_ERROR" != "x" ]; then
+            echo "$_TOKEN_ERROR"
+            exit 3
+        else
+            _PURE_TOKEN=`echo "$_TOKEN_RESULT" | grep '^{' |\
+                                                  sed 's/[{}\"\ ]//g' |\
+                                                  awk -F\: '{ print $2 }'`
+            echo "$_PURE_TOKEN"
+            echo "$_DIVIDER"
+        fi
+    fi
+else    
+    echo "Authenticating with token"
+fi    
+auth
+if [ "x$_AUTH_ERROR" != 'x' ]; then
     echo "$_ERROR_BOX"
-    echo "User authentication error, AAA exited with: $AUTH_RESPONSE" >&2
+    echo "User authentication error, AAA exited with: $_AUTH_ERROR" >&2
     echo "$AUTH_RAW"
     exit 2
 else
     echo "Authenticated User:"
-    json_cleanup "$AUTH_RAW"; echo "$_CLEAN_RESULT" | awk -F\: '{print $2}'
+    json_cleanup "$_AUTH_USER"; echo "$_CLEAN_RESULT" | awk -F\: '{print $2}'
 fi
 echo $_DIVIDER
 #-------------------------------------------------------------------------------
@@ -506,7 +559,6 @@ if [ $_LIST_SNAPSHOTS_PG ]; then
 fi
 
 #################### Create a snapshot of a Protection Group ###################
-
 if [ $_CREATE_SNAP_PG ]; then 
     POST_REQUEST='"snap":true,"source":["'$_SNAP_PG'"],"suffix":"'$_PG_SNAP_SUFFIX'"'
     echo $POST_REQUEST
@@ -514,6 +566,7 @@ if [ $_CREATE_SNAP_PG ]; then
     echo $POST_RAW
     
 fi
+
 ############################ SNAPSHOTS section here ############################
 # Get a list of snapshots from the protection group
 if [ $_CLONE_SNAPS ]; then
@@ -534,16 +587,6 @@ if [ $_CLONE_SNAPS ]; then
     POST_REQUEST=''
     
 fi
-# Iterate through snapshots and copy them to new devices
-    
-    # purevol copy EDWP12SITE1.FRANZ.EDWP12_SITE1_0000 EDWP12_SITE1_0000 --overwrite
-    # purevol copy EDWP06SITE2.snap.EDWP06_SITE2_0001 EDWP12_SITE1_0001
-    # purevol copy EDWP06SITE2.snap.EDWP06_SITE2_0002 EDWP12_SITE1_0002
-    
-# Now let's get serious, script ahoy, overwrite:
-#    EDWP12_SITE1_0000 |   276ea9e0aa2646f700011392 |   2048 G |   2017-02-13T16:32:56Z | EDWP06_SITE2_0000
-#    Serial	 276EA9E0AA2646F700011392		
-#    Created 2017-02-13 17:32:56
 
 ############################ SNAPSHOT restore only #############################
 # Get a list of snapshots from the protection group, then restore it to whatever
@@ -586,3 +629,17 @@ if [ $_SNAPSHOT_RESTORE ]; then
     POST_REQUEST=''
     
 fi
+
+
+################################ Deauth Session ################################
+echo $_DIVIDER
+echo "Deleting auth session"
+deAuth
+echo ""
+if [ $? == '0' ]; then
+    echo "Deauth succesfull"
+else
+    echo $_ERROR_BOX
+    echo "Problem with DeAuth process, session is still active."
+fi
+echo $_DIVIDER
