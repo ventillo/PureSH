@@ -26,8 +26,8 @@ USAGE="
     SYNOPSIS:
         $0 -i [-h -P -I -m
                -D [-F <regexp>]] 
-           -u <user> 
-           -t <token>
+           -u <user> | -t <token>
+           
 
     DESCRIPTION:
         Script and formatter to extract information out of the PURE family
@@ -44,6 +44,16 @@ USAGE="
     OPTIONS:
 
         -h      Help, obviously
+        
+        -u <username>     
+                Username for Pure to interactively type in a password at later 
+                stage. This option DOES NOT HAVE TO BE SPECIFIED with -t. 
+                
+        -t <token>     
+                Token, also displayed after successfull auth via user/pass (-u)
+                This can be used if you don't want to type your password all the
+                time. You can run -u <username> to display the token first, use
+                just the token later
         
         -l <snap_pg | vols | msg | info | maps | port>
                 Listing details of a spacific part of configuration or hardware
@@ -344,7 +354,7 @@ if [ $# = 0 ]; then
     exit 1;
 fi
 
-while getopts "hl:i:u:t:PDf:ImS:s:C:n:r:" optname; do
+while getopts "hl:i:u:t:f:S:s:C:n:r:D:d:" optname; do
     case $optname in
         "h")
             echo "$USAGE"
@@ -372,6 +382,9 @@ while getopts "hl:i:u:t:PDf:ImS:s:C:n:r:" optname; do
                 "maps")
                     _SHOW_MAPPING=1
                     ;;
+                "ports")
+                    _SHOW_PORTS=1
+                    ;;
             esac
             ;;
         "u")
@@ -380,22 +393,10 @@ while getopts "hl:i:u:t:PDf:ImS:s:C:n:r:" optname; do
         "t")
             _PURE_TOKEN=$OPTARG
             ;;
-        "P")
-            _SHOW_PORTS=1
-            ;;
-        "D")
-            _SHOW_VOLUMES=1
-            ;;
         "f")
             _VOLUMES_FILTER=$OPTARG
             _HOST_DETAILS=$OPTARG
             ;;            
-        "I")
-            _SHOW_INFO=1
-            ;;
-        "m")
-            _SHOW_MESSAGES=1
-            ;;
         "S")
             _CREATE_SNAP_PG=1
             _SNAP_PG=$OPTARG
@@ -414,8 +415,15 @@ while getopts "hl:i:u:t:PDf:ImS:s:C:n:r:" optname; do
         "r")
             _SNAPSHOT_RESTORE=1
             _SNAP_PG=$OPTARG
-            ;; 
-        \?)
+            ;;
+        "D")
+            _CREATE_DEVICES=1
+            _CREATE_DEVICES_PGROUP=$OPTARG
+            ;;
+        "d")
+            _CREATE_DEVICES_COUNT=$OPTARG
+            ;;
+            \?)
             echo "Invalid option: -$OPTARG" >&2
             #exit 1
             ;;
@@ -497,15 +505,13 @@ fi
 ######################## And who wants to see the volumes? #####################
 if [ $_SHOW_VOLUMES ]; then
     VOLUMES_RAW=`wget_get 'volume'`
+    _MACHINE_LIST=`echo "$VOLUMES_RAW" | json_cleanup_oneline | grep -v '^$'`
     awk_volume_header 
     echo "$_DIVIDER-------------------"
     if [ "x$_VOLUMES_FILTER" == "x" ]; then
-        echo "$VOLUMES_RAW" | json_cleanup_oneline_wwn |\
-                            grep -v '^$' | awk_volume_formatter
+        echo "$_MACHINE_LIST" | awk_volume_formatter
     else
-        echo "$VOLUMES_RAW" | json_cleanup_oneline_wwn |\
-                            grep -v '^$' | awk_volume_formatter |\
-                            grep "$_VOLUMES_FILTER"
+        echo "$_MACHINE_LIST" | awk_volume_formatter | grep "$_VOLUMES_FILTER"
     fi
                             
     #json_cleanup "$VOLUMES_RAW"
@@ -627,8 +633,77 @@ if [ $_SNAPSHOT_RESTORE ]; then
     fi
     #echo $SNAPSHOTS
     POST_REQUEST=''
-    
 fi
+
+########################## VOLUMES, more, add more #############################
+# If we need to add more devices to a diskgroup, need to ensure there is a 
+# script creates them, ads them to the correct host group and protection group
+if [ $_CREATE_DEVICES ]; then 
+    VOLUMES_RAW=`wget_get 'volume'`
+    _MACHINE_LIST=`echo "$VOLUMES_RAW" | json_cleanup_oneline | grep -v '^$'`
+    _VOLUME_LIST=`echo "$_MACHINE_LIST" | \
+                  awk -F, '{print $4}' | \
+                  grep "$_CREATE_DEVICES_PGROUP" | \
+                  awk -F\: '{print $2}' | sort`
+    echo "Current devices with selected search pattern:"
+    echo "$_VOLUME_LIST"
+    VOLUME_NAME_PREFIX=`echo "$_VOLUME_LIST" | tail -1 | sed 's/_[0-9]*$//g'`
+    echo $_DIVIDER
+    echo "Volume name prefix is: $VOLUME_NAME_PREFIX"
+    LAST_VOLUME=`echo "$_VOLUME_LIST" | tail -1 `
+    LAST_VOLUME_NUMBER=`echo $LAST_VOLUME | sed 's/.*_\([0-9]*\)/\1/g'`
+    LAST_VOLUME_DETAILS=`wget_get volume/$LAST_VOLUME?protect=true`
+    PGROUP_FOR_NEW_VOLS=`echo $LAST_VOLUME_DETAILS | \
+                         json_cleanup_oneline | \
+                         awk -F, '{print $2}' | \
+                         awk -F\: '{print $2}'`                     
+    echo "Last volume number: $LAST_VOLUME_NUMBER"
+    echo "These $_CREATE_DEVICES_COUNT new volumes will be added to $PGROUP_FOR_NEW_VOLS protection group."
+    echo ""
+    echo "Size for new volumes:"
+    read new_vol_size
+    echo ""
+    echo "New volumes to be added:"
+    volume=1
+    while [ $_CREATE_DEVICES_COUNT -ge $volume ]; do
+        volume_suffix=`expr $LAST_VOLUME_NUMBER + $volume`
+        volume_suffix=`printf "%04d\n" $volume_suffix`
+        new_volume_name="$VOLUME_NAME_PREFIX"_"$volume_suffix"
+        echo $new_volume_name
+        POST_REQUEST='"size":"'$new_vol_size'"'
+        COMMANDS="$COMMANDS
+        wget_post volume/$new_volume_name $POST_REQUEST"
+        PG_ADD_COMMANDS="$PG_ADD_COMMANDS
+        wget_post volume/$new_volume_name/pgroup/$PGROUP_FOR_NEW_VOLS"
+        volume=`expr $volume + 1`
+    done 
+    echo $_DIVIDER
+    echo "If the above looks OK, please type in 'yes'"
+    read response
+    COMMANDS=`echo "$COMMANDS" | sed 's/\ /;/g'`
+    PG_ADD_COMMANDS=`echo "$PG_ADD_COMMANDS" | sed 's/\ /;/g'`
+    echo $_DIVIDER
+    echo "Frame response:"
+    if [ $response == 'yes' ]; then
+        for command in $COMMANDS; do
+            to_execute=`echo $command | sed 's/;/\ /g'`
+            echo $to_execute
+            RESULT=`$to_execute`
+            echo "$RESULT"
+            sleep 1
+        done
+        for command in $PG_ADD_COMMANDS; do
+            to_execute=`echo $command | sed 's/;/\ /g'`
+            echo $to_execute
+            RESULT=`$to_execute`
+            echo "$RESULT"
+            sleep 1
+        done
+    else
+        echo "Cancelling!"
+    fi
+fi
+
 
 
 ################################ Deauth Session ################################
