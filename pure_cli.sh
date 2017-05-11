@@ -108,6 +108,11 @@ USAGE="
                 devices (EDWP12SITE1.FRANZ.EDWP12_SITE1_0000, 
                 EDWP12SITE1.FRANZ.EDWP12_SITE1_0001, ...)
                 
+        -D <protection group name>
+                Select a protection group name that you wish to add drives to
+                
+        -d <count of new devices>
+                The number of devices to be added
 
 
     ERROR_CODES:
@@ -118,14 +123,20 @@ USAGE="
         $0 -i 4.2.2.3 -u xyz -t 967adc3d-29ee-1228-6158-7e3ca33fb198 -DF '^ *ora'
         
         Create a new snapshot:
-        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal -S EDWP06SITE2 -s 'snapp'
-        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal -l snap_pg
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
+           -S EDWP06SITE2 -s 'snapp'
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
+           -l snap_pg
         
         Clone a snapshot set (the whole protection group):
         <-C argument>.<EDWP06_SITE2_xxxx> -------------->
             <-n argument>_xxxx where xxxx is the seq number read from source
                                   and appended to the new name
-        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal -C EDWP06SITE2.snapp -n EDWP12_SITE1
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
+           -C EDWP06SITE2.snapp -n EDWP12_SITE1
+        
+        Add drives
+        $0 
 "
 
 _ERROR_BOX="
@@ -658,7 +669,8 @@ if [ $_CREATE_DEVICES ]; then
                          awk -F, '{print $2}' | \
                          awk -F\: '{print $2}'`                     
     echo "Last volume number: $LAST_VOLUME_NUMBER"
-    echo "These $_CREATE_DEVICES_COUNT new volumes will be added to $PGROUP_FOR_NEW_VOLS protection group."
+    echo "These $_CREATE_DEVICES_COUNT new volumes will be added to"
+    echo "protection group: $PGROUP_FOR_NEW_VOLS"
     echo ""
     echo "Size for new volumes:"
     read new_vol_size
