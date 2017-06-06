@@ -11,9 +11,10 @@ set +x
 
 # Todo:
 #   Error handling
-#   DONE - Volume detail, finish it.
+#   Input values check, failsafe
+#   New disk add - mapping
 
-VERSION="1.0"
+VERSION="1.1"
 SUBJECT="REST_API_Pure_CLI"
 
 #_PURE_IP=""
@@ -55,7 +56,7 @@ USAGE="
                 time. You can run -u <username> to display the token first, use
                 just the token later
         
-        -l <snap_pg | vols | msg | info | maps | port>
+        -l <snap_pg | vols | msg | info | maps | port | perf>
                 Listing details of a spacific part of configuration or hardware
                 <snap_pg> 
                     * list snapshots of protection groups, not listing the 
@@ -77,6 +78,9 @@ USAGE="
                         * to display all mapping for all hosts, use -f '.'
                 <port>
                     * list of frontend ports
+                <perf>
+                    * if used with 'perf', values for hostorical timeframes 
+                      1h, 3h, 24h, 7d, 30d, 90d, and 1y can be used.
                     
                
 
@@ -356,6 +360,64 @@ awk_snap_extractor () {
                print name
               }'
 }
+#----------------------------- PERFORMANCE -------------------------------------
+awk_perf_header () {
+    echo "" | awk -F\, '{printf("%8s | %8s | %8s | %8s | %11s | %11s | %20s | %4s \n", 
+                                "Wr / s",
+                                "Read / s",
+                                "Lat WR",
+                                "Lat RD",
+                                "Out / s",
+                                "In / s",
+                                "Time",
+                                
+                                "Q depth")}'
+    echo "" | awk -F\, '{printf("%8s | %8s | %8s | %8s | %11s | %11s | %20s | %4s \n", 
+                                "[IO]",
+                                "[IO]",
+                                "[us / IO]",
+                                "[us / IO]",
+                                "Out / s",
+                                "In / s",
+                                "Time",
+                                
+                                "Q depth")}'
+    }
+                                
+awk_perf_formatter () {
+    awk -F\, '{writes_per_sec=gensub(/[a-z_]*:/, "", 1, $1);
+               usec_per_write_op=gensub(/[a-z_]*:/, "", 1, $2);
+               output_per_sec=gensub(/[a-z_]*:/, "", 1, $3);
+               reads_per_sec=gensub(/[a-z_]*:/, "", 1, $4);
+               input_per_sec=gensub(/[a-z_]*:/, "", 1, $5);
+               time=gensub(/[a-z_]*:/, "", 1, $6);
+               usec_per_read_op=gensub(/[a-z_]*:/, "", 1, $7);
+               queue_depth=gensub(/[a-z_]*:/, "", 1, $8);
+               printf("%8s | %8s | %8s | %8s | %11s | %11s | %20s | %4s \n", 
+                      writes_per_sec,
+                      reads_per_sec,
+                      usec_per_read_op,
+                      usec_per_write_op,
+                      output_per_sec,
+                      input_per_sec,
+                      time,
+                      queue_depth)}'
+    }
+#----------------------------- MAPPING in VOLUME ADD ---------------------------
+awk_map_formatter_voladd () {
+    awk -F\, '{host=gensub(/[a-z]*:/, "", 1, $1);
+               serial=gensub(/[a-z]*:/, "", 1, $2);
+               tstamp=gensub(/[a-z]*:/, "", 1, $3);
+               name=gensub(/[a-z]*:/, "", 1, $4);
+               size=gensub(/[a-z]*:/, "", 1, $5);
+               printf("%20s | %-35s | %20s | %35s | %15s \n", 
+                      source,
+                      serial,
+                      tstamp,
+                      name,
+                      size)
+              }'
+}
 
 ################################################################################
 ########################### OPTS / ARGS ########################################
@@ -396,6 +458,9 @@ while getopts "hl:i:u:t:f:S:s:C:n:r:D:d:" optname; do
                 "ports")
                     _SHOW_PORTS=1
                     ;;
+                "perf")
+                    _PERF=1
+                    ;;
             esac
             ;;
         "u")
@@ -407,6 +472,7 @@ while getopts "hl:i:u:t:f:S:s:C:n:r:D:d:" optname; do
         "f")
             _VOLUMES_FILTER=$OPTARG
             _HOST_DETAILS=$OPTARG
+            _PERF_PERIOD=$OPTARG
             ;;            
         "S")
             _CREATE_SNAP_PG=1
@@ -649,13 +715,17 @@ fi
 ########################## VOLUMES, more, add more #############################
 # If we need to add more devices to a diskgroup, need to ensure there is a 
 # script creates them, ads them to the correct host group and protection group
+# not happy with how it maps the volumes. It doesn't!!!
 if [ $_CREATE_DEVICES ]; then 
     VOLUMES_RAW=`wget_get 'volume'`
+    VOLUMES_RAW=`wget_get volume?connect=true`
     _MACHINE_LIST=`echo "$VOLUMES_RAW" | json_cleanup_oneline | grep -v '^$'`
     _VOLUME_LIST=`echo "$_MACHINE_LIST" | \
                   awk -F, '{print $4}' | \
                   grep "$_CREATE_DEVICES_PGROUP" | \
                   awk -F\: '{print $2}' | sort`
+    VOL_DET=`wget_get volume?connect=true`
+    #echo "$VOL_DET" | json_cleanup_oneline | grep -v '^$' | grep $_CREATE_DEVICES_PGROUP
     echo "Current devices with selected search pattern:"
     echo "$_VOLUME_LIST"
     VOLUME_NAME_PREFIX=`echo "$_VOLUME_LIST" | tail -1 | sed 's/_[0-9]*$//g'`
@@ -672,7 +742,7 @@ if [ $_CREATE_DEVICES ]; then
     echo "These $_CREATE_DEVICES_COUNT new volumes will be added to"
     echo "protection group: $PGROUP_FOR_NEW_VOLS"
     echo ""
-    echo "Size for new volumes:"
+    echo "Size for new volumes (1G | 1M | 1T):"
     read new_vol_size
     echo ""
     echo "New volumes to be added:"
@@ -687,6 +757,8 @@ if [ $_CREATE_DEVICES ]; then
         wget_post volume/$new_volume_name $POST_REQUEST"
         PG_ADD_COMMANDS="$PG_ADD_COMMANDS
         wget_post volume/$new_volume_name/pgroup/$PGROUP_FOR_NEW_VOLS"
+        HOST_MAP_COMMANDS="$HOST_MAP_COMMANDS
+        wget_post hgroup/$host_group/volume/$new_volume_name"
         volume=`expr $volume + 1`
     done 
     echo $_DIVIDER
@@ -716,7 +788,15 @@ if [ $_CREATE_DEVICES ]; then
     fi
 fi
 
-
+############################ Performance? ######################################
+# Get a list of snapshots from the protection group
+if [ $_PERF ]; then
+    PERFORMANCE_RAW=`wget_get "array?action=monitor&historical=$_PERF_PERIOD"`
+    _MACHINE_LIST=`echo "$PERFORMANCE_RAW" | json_cleanup_oneline | grep -v '^$'`
+    awk_perf_header
+    echo "$_DIVIDER-----------------------"
+    echo "$_MACHINE_LIST" | awk_perf_formatter
+fi
 
 ################################ Deauth Session ################################
 echo $_DIVIDER
