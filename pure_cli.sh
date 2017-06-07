@@ -362,26 +362,26 @@ awk_snap_extractor () {
 }
 #----------------------------- PERFORMANCE -------------------------------------
 awk_perf_header () {
-    echo "" | awk -F\, '{printf("%8s | %8s | %8s | %8s | %11s | %11s | %20s | %4s \n", 
+    echo "" | awk -F\, '{printf("%10s | %10s | %8s | %8s | %8s | %8s | %11s | %11s | %4s \n", 
+                                "Date",
+                                "Time",
                                 "Wr / s",
                                 "Read / s",
                                 "Lat WR",
                                 "Lat RD",
                                 "Out / s",
                                 "In / s",
-                                "Time",
-                                
                                 "Q depth")}'
-    echo "" | awk -F\, '{printf("%8s | %8s | %8s | %8s | %11s | %11s | %20s | %4s \n", 
+    echo "" | awk -F\, '{printf("%10s | %10s | %8s | %8s | %8s | %8s | %11s | %11s | %4s \n", 
+                                " ",
+                                " ",
                                 "[IO]",
                                 "[IO]",
-                                "[us / IO]",
-                                "[us / IO]",
-                                "Out / s",
-                                "In / s",
-                                "Time",
-                                
-                                "Q depth")}'
+                                "[us/IO]",
+                                "[us/IO]",
+                                "[GB]",
+                                "[GB]",
+                                "[#]")}'
     }
                                 
 awk_perf_formatter () {
@@ -390,17 +390,19 @@ awk_perf_formatter () {
                output_per_sec=gensub(/[a-z_]*:/, "", 1, $3);
                reads_per_sec=gensub(/[a-z_]*:/, "", 1, $4);
                input_per_sec=gensub(/[a-z_]*:/, "", 1, $5);
-               time=gensub(/[a-z_]*:/, "", 1, $6);
+               tstamp=gensub(/[a-z_]*:/, "", 1, $6);
+               date=gensub(/^(.+)T.*/, "\\1", 1, tstamp);
+               time=gensub(/.*T(.+)Z/, "\\1", 1, tstamp);
                usec_per_read_op=gensub(/[a-z_]*:/, "", 1, $7);
                queue_depth=gensub(/[a-z_]*:/, "", 1, $8);
-               printf("%8s | %8s | %8s | %8s | %11s | %11s | %20s | %4s \n", 
+               printf("%10s | %10s | %8s | %8s | %8s | %8s | %11s | %11s | %4s \n", 
+                      date, time,
                       writes_per_sec,
                       reads_per_sec,
                       usec_per_read_op,
                       usec_per_write_op,
-                      output_per_sec,
-                      input_per_sec,
-                      time,
+                      output_per_sec / 1024 / 1024 /1024,
+                      input_per_sec / 1024 / 1024 / 1024,
                       queue_depth)}'
     }
 #----------------------------- MAPPING in VOLUME ADD ---------------------------
