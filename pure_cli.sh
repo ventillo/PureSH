@@ -127,9 +127,9 @@ USAGE="
         $0 -i 4.2.2.3 -u xyz -t 967adc3d-29ee-1228-6158-7e3ca33fb198 -DF '^ *ora'
         
         Create a new snapshot:
-        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i purehost.it.domain \
            -S CGROUPNAME -s 'snapp'
-        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i purehost.it.domain \
            -l snap_pg
         
         Clone a snapshot set (the whole protection group):
