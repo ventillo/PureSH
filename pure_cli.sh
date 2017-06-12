@@ -107,10 +107,10 @@ USAGE="
                 
         -r <pg snapshot name>
                 Restores a given snapshot to source volumes. e.g. if the PG
-                snapshot is EDWP12SITE1.FRANZ, it was created from the 
-                protection group EDWP12SITE1, containing snapshots of the 
-                devices (EDWP12SITE1.FRANZ.EDWP12_SITE1_0000, 
-                EDWP12SITE1.FRANZ.EDWP12_SITE1_0001, ...)
+                snapshot is SNAPSHOT.FRANZ, it was created from the 
+                protection group SNAPSHOT, containing snapshots of the 
+                devices (SNAPSHOT.SNAPSHOT_SITE1_0000, 
+                SNAPSHOT.FRANZ.SNAPSHOT_SITE1_0001, ...)
                 
         -D <protection group name>
                 Select a protection group name that you wish to add drives to
@@ -128,16 +128,16 @@ USAGE="
         
         Create a new snapshot:
         $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
-           -S EDWP06SITE2 -s 'snapp'
+           -S CGROUPNAME -s 'snapp'
         $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
            -l snap_pg
         
         Clone a snapshot set (the whole protection group):
-        <-C argument>.<EDWP06_SITE2_xxxx> -------------->
+        <-C argument>.<NEW_DISKS_PREFIX_xxxx> -------------->
             <-n argument>_xxxx where xxxx is the seq number read from source
                                   and appended to the new name
-        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i av3x320p.it.internal \
-           -C EDWP06SITE2.snapp -n EDWP12_SITE1
+        $0 -t 967adc3c-29be-1118-6158-7e3ca31fb198 -i purehost.it.domain \
+           -C CGROUP.snapp -n NEW_DISKS_PREFIX
         
         Add drives
         $0 
